@@ -1,0 +1,119 @@
+#include <MPU6050.h>
+
+#include <Wire.h>
+
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+//const char* ssid = "iPhone";
+//const char* password = "11111111";
+
+const char* ssid = "Yolo";
+const char* password = "12345678";
+
+//const char* serverIP = "172.20.10.6";   // Replace with your Raspberry Pi's IP
+
+const char* serverIP = "192.168.122.100";  // Replace with your Raspberry Pi's IP
+
+const int serverPort = 4210;  // UDP Port
+
+WiFiUDP udp;
+
+#define SDA_PIN 11  // Define SDA pin (GPIO11)
+#define SCL_PIN 12  // Define SCL pin (GPIO12)
+
+MPU6050 mpu;
+
+float angleX = 0, angleY = 0, angleZ = 0;  // Tracked angular position (degrees)
+unsigned long lastTime;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Initialize MPU6050");
+
+  // Initialize I2C with the specified pins
+  Wire.begin(SDA_PIN, SCL_PIN);  
+
+  WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nConnected to Wi-Fi");
+    udp.begin(4210);  // Start UDP
+  // Wait until the MPU6050 is connected
+  while (!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G)) {    
+    Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
+    delay(500);
+  }
+
+  // Calibrate gyroscope at rest to remove bias
+  mpu.calibrateGyro();
+  mpu.setThreshold(3);
+  
+  lastTime = millis();  // Initialize timing
+  checkSettings();
+}
+
+void checkSettings() {
+  Serial.println();
+  Serial.print(" * Sleep Mode:        ");
+  Serial.println(mpu.getSleepEnabled() ? "Enabled" : "Disabled");
+
+  Serial.print(" * Gyroscope:         ");
+  switch (mpu.getScale()) {
+    case MPU6050_SCALE_2000DPS: Serial.println("2000 dps"); break;
+    case MPU6050_SCALE_1000DPS: Serial.println("1000 dps"); break;
+    case MPU6050_SCALE_500DPS:  Serial.println("500 dps"); break;
+    case MPU6050_SCALE_250DPS:  Serial.println("250 dps"); break;
+  }
+
+  Serial.print(" * Gyroscope offsets: ");
+  Serial.print(mpu.getGyroOffsetX()); Serial.print(" / ");
+  Serial.print(mpu.getGyroOffsetY()); Serial.print(" / ");
+  Serial.println(mpu.getGyroOffsetZ());
+  Serial.println();
+}
+
+void loop() {
+  // Read sensor data
+  Vector normAccel = mpu.readNormalizeAccel();
+  Vector normGyro = mpu.readNormalizeGyro();
+
+  // Calculate time difference for integration
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastTime) / 1000.0;  // Convert ms to seconds
+  lastTime = currentTime;
+
+  // Integrate gyroscope data to get angular position (in degrees)
+  angleX += normGyro.XAxis * dt;  // Rotation around X-axis (Pitch)
+  angleY += normGyro.YAxis * dt;  // Rotation around Y-axis (Roll)
+  angleZ += normGyro.ZAxis * dt;  // Rotation around Z-axis (Yaw)
+
+  // Correct drift using accelerometer for X and Y angles
+  float accelAngleZ = atan2(normAccel.XAxis, normAccel.YAxis) * 180 / PI;
+  float accelAngleX = atan2(normAccel.YAxis, normAccel.ZAxis) * 180 / PI;
+  float accelAngleY = atan2(-normAccel.XAxis, sqrt(normAccel.YAxis * normAccel.YAxis + normAccel.ZAxis * normAccel.ZAxis)) * 180 / PI;
+
+  // Complementary filter to blend accelerometer and gyroscope data
+  float alpha = 0.9; // Adjust weight (0.9-0.99)
+  angleX = alpha * (angleX) + (1 - alpha) * accelAngleX;
+  angleY = alpha * (angleY) + (1 - alpha) * accelAngleY;
+
+  // Print tracked angles
+  Serial.print("Angle X (Pitch): "); Serial.print(angleX);
+  Serial.print("\tAngle Y (Roll): "); Serial.print(angleY);
+  Serial.print("\tAngle Z (Yaw): "); Serial.println(angleZ);
+  udp.beginPacket(serverIP, serverPort);
+  udp.print(angleX);
+  udp.print(":");
+  udp.print(angleY);
+  udp.print(":");
+  udp.print(angleZ);
+  udp.endPacket();
+
+  // Detect gestures
+ // detectGestures(angleX, angleY, normGyro);
+
+  delay(100);  // Adjust delay as needed for your use case
+}
